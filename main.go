@@ -1,0 +1,224 @@
+package main
+
+import (
+	"cmp"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"net/url"
+	"strings"
+
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+)
+
+const (
+	SupportAiAPI = "https://api.5systems.ru/support-ai/v1"
+)
+
+type TipsInput struct {
+	Query string `json:"query" jsonschema:"User's question"`
+}
+
+type Tip struct {
+	Title    string `json:"title" jsonschema:"The tip's title"`
+	FullText string `json:"full_text" jsonschema:"The full text of tips in markdown format"`
+}
+
+type TipsOutput struct {
+	Tips []Tip `json:"tips" jsonschema:"Relevant tips, empty if none found"`
+}
+
+type ArticlesInput struct {
+	Query string `json:"query" jsonschema:"User's question"`
+}
+
+type Article struct {
+	Title    string `json:"title" jsonschema:"The article's title"`
+	FullText string `json:"full_text" jsonschema:"The full text of the article in markdown format"`
+	Url      string `json:"url" jsonschema:"The article's URL"`
+}
+
+type ArticlesOutput struct {
+	Articles []Article `json:"articles" jsonschema:"Relevant articles, empty if none found"`
+}
+
+func makeNWSRequest[T any](ctx context.Context, url string) (*T, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Accept", "application/json")
+
+	client := http.DefaultClient
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to make request to %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("HTTP error %d: %s, url: %s", resp.StatusCode, string(body), url)
+	}
+
+	var result T
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("failed to decode response: %w, body res: %s", err, string(body))
+	}
+
+	return &result, nil
+}
+
+func formatTip(tip Tip) string {
+	return fmt.Sprintf(`
+Title: %s
+Full text: %s
+`, tip.Title, tip.FullText)
+}
+
+// func formatArticle(article Article) string {
+// 	return fmt.Sprintf(`
+// Title: %s
+// Url: %s
+// Full text: %s
+// `, article.Title, article.Url, article.FullText)
+// }
+
+// searchTips wraps the tips in an object: MCP requires structuredContent to be
+// a JSON object, so "no tips" is an empty array under "tips".
+func searchTips(ctx context.Context, req *mcp.CallToolRequest, input TipsInput) (
+	*mcp.CallToolResult, TipsOutput, error,
+) {
+
+	query := input.Query
+
+	params := url.Values{}
+	params.Add("collection_name", "5s-tips")
+	params.Add("query", query)
+
+	tipsURL := fmt.Sprintf("%s/search?%s", SupportAiAPI, params.Encode())
+
+	tipsData, err := makeNWSRequest[[]Tip](ctx, tipsURL)
+	if err != nil {
+		return nil, TipsOutput{}, fmt.Errorf("unable to fetch tips for query %s: %w", query, err)
+	}
+
+	text := "No relevant tips for this question."
+
+	if tipsData == nil {
+		result := &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: text}},
+		}
+
+		return result, TipsOutput{Tips: []Tip{}}, nil
+	}
+
+	// An empty result is an empty array, not an error.
+	tips := make([]Tip, 0, len(*tipsData))
+	for _, tip := range *tipsData {
+		tips = append(tips, Tip{
+			Title:    cmp.Or(tip.Title, "Unknown"),
+			FullText: cmp.Or(tip.FullText, "No full text available"),
+		})
+	}
+
+	if len(tips) > 0 {
+		var formatted []string
+		for _, tip := range tips {
+			formatted = append(formatted, formatTip(tip))
+		}
+		text = strings.Join(formatted, "\n---\n")
+	}
+
+	result := &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: text}},
+	}
+
+	return result, TipsOutput{Tips: tips}, nil
+}
+
+// // searchArticles wraps the articles in an object: MCP requires structuredContent
+// // to be a JSON object, so "no articles" is an empty array under "articles".
+// func searchArticles(ctx context.Context, req *mcp.CallToolRequest, input ArticlesInput) (
+// 	*mcp.CallToolResult, ArticlesOutput, error,
+// ) {
+
+// 	query := input.Query
+
+// 	params := url.Values{}
+// 	params.Add("collection_name", "5s-doc-ollama")
+// 	params.Add("query", query)
+
+// 	articlesURL := fmt.Sprintf("%s/search?%s", SupportAiAPI, params.Encode())
+
+// 	articlesData, err := makeNWSRequest[[]Article](ctx, articlesURL)
+// 	if err != nil {
+// 		return nil, ArticlesOutput{}, fmt.Errorf("unable to fetch articles for query %s: %w", query, err)
+// 	}
+
+// 	text := "No relevant articles for this question."
+
+// 	if articlesData == nil {
+// 		result := &mcp.CallToolResult{
+// 			Content: []mcp.Content{&mcp.TextContent{Text: text}},
+// 		}
+
+// 		return result, ArticlesOutput{Articles: []Article{}}, nil
+// 	}
+
+// 	// An empty result is an empty array, not an error.
+// 	articles := make([]Article, 0, len(*articlesData))
+// 	for _, article := range *articlesData {
+// 		articles = append(articles, Article{
+// 			Title:    cmp.Or(article.Title, "Unknown"),
+// 			FullText: cmp.Or(article.FullText, "No full text available"),
+// 			Url:      article.Url,
+// 		})
+// 	}
+
+// 	if len(articles) > 0 {
+// 		var formatted []string
+// 		for _, article := range articles {
+// 			formatted = append(formatted, formatArticle(article))
+// 		}
+// 		text = strings.Join(formatted, "\n---\n")
+// 	}
+
+// 	result := &mcp.CallToolResult{
+// 		Content: []mcp.Content{&mcp.TextContent{Text: text}},
+// 	}
+
+// 	return result, ArticlesOutput{Articles: articles}, nil
+// }
+
+func main() {
+	// Create MCP server.
+	server := mcp.NewServer(&mcp.Implementation{
+		Name:    "support-ai-mcp",
+		Version: "1.0.0",
+	}, &mcp.ServerOptions{
+		Capabilities: &mcp.ServerCapabilities{},
+	})
+
+	// Add search_tips tool
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "search_tips",
+		Description: "Search for relevant tips",
+	}, searchTips)
+
+	// // Add search_articles tool
+	// mcp.AddTool(server, &mcp.Tool{
+	// 	Name:        "search_articles",
+	// 	Description: "Search for relevant articles",
+	// }, searchArticles)
+
+	// Run server on stdio transport
+	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
+		log.Fatal(err)
+	}
+}
