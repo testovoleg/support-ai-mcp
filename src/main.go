@@ -8,13 +8,15 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 const (
-	SupportAiAPI = "https://api.5systems.ru/support-ai/v1"
+	SupportAiAPI = "https://api.5systems.ru/support-ai/v1" // prod
+	// SupportAiAPI = "https://delta3.5-systems.ru/v1" // dev
 
 	MaxResults = 5
 )
@@ -53,6 +55,7 @@ func makeNWSRequest[T any](ctx context.Context, url string) (*T, error) {
 	}
 
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+os.Getenv("SUPPORT_AI_MCP_SECRET"))
 
 	client := http.DefaultClient
 	resp, err := client.Do(req)
