@@ -1,7 +1,6 @@
 package main
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -16,6 +15,8 @@ import (
 
 const (
 	SupportAiAPI = "https://api.5systems.ru/support-ai/v1"
+
+	MaxResults = 5
 )
 
 type TipsInput struct {
@@ -36,9 +37,9 @@ type ArticlesInput struct {
 }
 
 type Article struct {
-	Title    string `json:"title" jsonschema:"The article's title"`
-	FullText string `json:"full_text" jsonschema:"The full text of the article in markdown format"`
-	Url      string `json:"url" jsonschema:"The article's URL"`
+	Title string `json:"title" jsonschema:"The article's title"`
+	// FullText string `json:"full_text" jsonschema:"The full text of the article in markdown format"`
+	Url string `json:"url" jsonschema:"The article's URL"`
 }
 
 type ArticlesOutput struct {
@@ -81,13 +82,12 @@ Full text: %s
 `, tip.Title, tip.FullText)
 }
 
-// func formatArticle(article Article) string {
-// 	return fmt.Sprintf(`
-// Title: %s
-// Url: %s
-// Full text: %s
-// `, article.Title, article.Url, article.FullText)
-// }
+func formatArticle(article Article) string {
+	return fmt.Sprintf(`
+Title: %s
+Url: %s
+`, article.Title, article.Url)
+}
 
 // searchTips wraps the tips in an object: MCP requires structuredContent to be
 // a JSON object, so "no tips" is an empty array under "tips".
@@ -103,98 +103,89 @@ func searchTips(ctx context.Context, req *mcp.CallToolRequest, input TipsInput) 
 
 	tipsURL := fmt.Sprintf("%s/search?%s", SupportAiAPI, params.Encode())
 
-	tipsData, err := makeNWSRequest[[]Tip](ctx, tipsURL)
+	rawTips, err := makeNWSRequest[[]Tip](ctx, tipsURL)
 	if err != nil {
 		return nil, TipsOutput{}, fmt.Errorf("unable to fetch tips for query %s: %w", query, err)
 	}
 
-	text := "No relevant tips for this question."
-
-	if tipsData == nil {
+	// An empty result is an empty array, not an error.
+	if rawTips == nil || len(*rawTips) == 0 {
 		result := &mcp.CallToolResult{
-			Content: []mcp.Content{&mcp.TextContent{Text: text}},
+			Content: []mcp.Content{&mcp.TextContent{Text: "No relevant tips for this question."}},
 		}
 
 		return result, TipsOutput{Tips: []Tip{}}, nil
 	}
 
-	// An empty result is an empty array, not an error.
-	tips := make([]Tip, 0, len(*tipsData))
-	for _, tip := range *tipsData {
-		tips = append(tips, Tip{
-			Title:    cmp.Or(tip.Title, "Unknown"),
-			FullText: cmp.Or(tip.FullText, "No full text available"),
-		})
-	}
+	allTips := *rawTips
+	lenResList := min(len(allTips), MaxResults)
 
-	if len(tips) > 0 {
-		var formatted []string
-		for _, tip := range tips {
-			formatted = append(formatted, formatTip(tip))
-		}
-		text = strings.Join(formatted, "\n---\n")
+	tips := make([]Tip, 0, lenResList)
+	formatted := make([]string, 0, lenResList)
+	for _, tip := range allTips[:lenResList] {
+		tips = append(tips, Tip{
+			Title:    tip.Title,
+			FullText: tip.FullText,
+		})
+
+		formatted = append(formatted, formatTip(tip))
 	}
 
 	result := &mcp.CallToolResult{
-		Content: []mcp.Content{&mcp.TextContent{Text: text}},
+		Content: []mcp.Content{&mcp.TextContent{Text: strings.Join(formatted, "\n---\n")}},
 	}
 
 	return result, TipsOutput{Tips: tips}, nil
 }
 
-// // searchArticles wraps the articles in an object: MCP requires structuredContent
-// // to be a JSON object, so "no articles" is an empty array under "articles".
-// func searchArticles(ctx context.Context, req *mcp.CallToolRequest, input ArticlesInput) (
-// 	*mcp.CallToolResult, ArticlesOutput, error,
-// ) {
+// searchArticles wraps the articles in an object: MCP requires structuredContent
+// to be a JSON object, so "no articles" is an empty array under "articles".
+func searchArticles(ctx context.Context, req *mcp.CallToolRequest, input ArticlesInput) (
+	*mcp.CallToolResult, ArticlesOutput, error,
+) {
 
-// 	query := input.Query
+	query := input.Query
 
-// 	params := url.Values{}
-// 	params.Add("collection_name", "5s-doc-ollama")
-// 	params.Add("query", query)
+	params := url.Values{}
+	params.Add("collection_name", "5s-doc-ollama")
+	params.Add("query", query)
 
-// 	articlesURL := fmt.Sprintf("%s/search?%s", SupportAiAPI, params.Encode())
+	articlesURL := fmt.Sprintf("%s/search?%s", SupportAiAPI, params.Encode())
 
-// 	articlesData, err := makeNWSRequest[[]Article](ctx, articlesURL)
-// 	if err != nil {
-// 		return nil, ArticlesOutput{}, fmt.Errorf("unable to fetch articles for query %s: %w", query, err)
-// 	}
+	rawArticles, err := makeNWSRequest[[]Article](ctx, articlesURL)
+	if err != nil {
+		return nil, ArticlesOutput{}, fmt.Errorf("unable to fetch articles for query %s: %w", query, err)
+	}
 
-// 	text := "No relevant articles for this question."
+	// An empty result is an empty array, not an error.
+	if rawArticles == nil || len(*rawArticles) == 0 {
+		result := &mcp.CallToolResult{
+			Content: []mcp.Content{&mcp.TextContent{Text: "No relevant articles for this question."}},
+		}
 
-// 	if articlesData == nil {
-// 		result := &mcp.CallToolResult{
-// 			Content: []mcp.Content{&mcp.TextContent{Text: text}},
-// 		}
+		return result, ArticlesOutput{Articles: []Article{}}, nil
+	}
 
-// 		return result, ArticlesOutput{Articles: []Article{}}, nil
-// 	}
+	allArticles := *rawArticles
+	lenResList := min(len(allArticles), MaxResults)
 
-// 	// An empty result is an empty array, not an error.
-// 	articles := make([]Article, 0, len(*articlesData))
-// 	for _, article := range *articlesData {
-// 		articles = append(articles, Article{
-// 			Title:    cmp.Or(article.Title, "Unknown"),
-// 			FullText: cmp.Or(article.FullText, "No full text available"),
-// 			Url:      article.Url,
-// 		})
-// 	}
+	articles := make([]Article, 0, lenResList)
+	formatted := make([]string, 0, lenResList)
+	for _, article := range allArticles[:lenResList] {
+		articles = append(articles, Article{
+			Title: article.Title,
+			Url:   article.Url,
+		})
 
-// 	if len(articles) > 0 {
-// 		var formatted []string
-// 		for _, article := range articles {
-// 			formatted = append(formatted, formatArticle(article))
-// 		}
-// 		text = strings.Join(formatted, "\n---\n")
-// 	}
+		formatted = append(formatted, formatArticle(article))
+	}
 
-// 	result := &mcp.CallToolResult{
-// 		Content: []mcp.Content{&mcp.TextContent{Text: text}},
-// 	}
+	result := &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: strings.Join(formatted, "\n---\n")}},
+	}
 
-// 	return result, ArticlesOutput{Articles: articles}, nil
-// }
+	return result, ArticlesOutput{Articles: articles}, nil
+}
 
 func main() {
 	// Create MCP server.
@@ -211,11 +202,11 @@ func main() {
 		Description: "Search for relevant tips",
 	}, searchTips)
 
-	// // Add search_articles tool
-	// mcp.AddTool(server, &mcp.Tool{
-	// 	Name:        "search_articles",
-	// 	Description: "Search for relevant articles",
-	// }, searchArticles)
+	// Add search_articles tool
+	mcp.AddTool(server, &mcp.Tool{
+		Name:        "search_articles",
+		Description: "Search for relevant articles",
+	}, searchArticles)
 
 	// Run server on stdio transport
 	if err := server.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
